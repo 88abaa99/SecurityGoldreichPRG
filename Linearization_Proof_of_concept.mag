@@ -1,0 +1,331 @@
+/*
+* This code is a MAGMA proof of concept implementing section 4 
+* of the full version of the paper
+* "On the concrete security of Goldreich's PRG"
+* For any comment, please ask melissa.rossi@ens.fr
+*/
+
+/***********************************    PARAMETERS    ********************************/
+n:=100;                                   //Number of variables
+stretch := 1.35;                          //Stretch
+m:=Round(n^(stretch));                    //Number of equations
+
+/**********************************    STRUCTURES    **********************************/
+
+RR:= RealField(4);                         //Real field
+K := GF(2);                                //Base field
+ZZ:=Integers();                            //Integer field
+P:=PolynomialRing(K, n, "grevlex");        //Polynomial ring of K                       
+AssignNames(~P, ["x" cat IntegerToString(i) : i in [1..n]]);
+X:={P.i : i in [1..n]};                    //Variables
+
+printf "PARAMETERS (n=%o, s=%o)\n\n",n,RR!stretch;
+
+/***********************************    FUNCTIONS    ************************************/
+
+/*
+*  The following function computes a Goldreich PRG with predicate P5
+*/
+ComputePublicSystem:=function()
+    quadraticterms:=[];    
+    publicsystem:=[];
+    subS:=[];
+    for i in [1..m] do
+    repeat
+            subS[1]:= Random([1..n]);
+            subS[2]:= Random([1..n]);
+            subS[3]:= Random([1..n]);
+            subS[4]:= Random([1..n]);
+            subS[5]:= Random([1..n]);
+    until subS[1] ne subS[2] and subS[1] ne subS[3] and subS[1] ne subS[4] and subS[1] ne subS[5] and subS[2] ne subS[3] and subS[2] ne subS[4] and subS[2] ne subS[5] and subS[3] ne subS[4]and subS[3] ne subS[5] and subS[4] ne subS[5];
+    //subS:=Sort(subS); //For sorted PRG
+    publicsystem[i]:=P.subS[1]+P.subS[2]+P.subS[3]+P.subS[4]*P.subS[5];
+    quadraticterms[i]:=P.subS[4]*P.subS[5];
+    end for;
+    return publicsystem,quadraticterms;
+end function;
+
+
+/*
+* The following function generate a sequence formed by the linear and quadratic monomials
+*/
+gen_quadratic_unknowns:=function(); 
+    quadratic_unknowns:=[];
+    for v in [1..n] do
+        Append(~quadratic_unknowns,P.v);
+    end for;
+    for l in [1..n] do
+        for k in [l+1..n] do
+            Append(~quadratic_unknowns,P.l*P.k);
+        end for;
+    end for;
+    return quadratic_unknowns;
+end function;
+
+/*
+* The following function generate a sequence formed by the linear variables
+*/
+gen_lin_unknowns:=function();
+    lin_unknowns:=[];
+    for v in [1..n] do
+        Append(~lin_unknowns,P.v);
+    end for;
+    return lin_unknowns;
+end function;
+
+/*
+* The following function checks if the right seed is found according to the variety found with Groebner basis
+*/
+Isseedfound:=function(var,seed) 
+    found:=false;
+    for i in [1..#(var)] do 
+        if TupleToList(var[i]) eq Seqlist(seed) then
+            found:=true;
+        end if;
+    end for;
+    return found;
+end function;
+
+/*
+* The following function outputs the index of a monomial
+*/
+IndexMonomial := function(x)
+    index:=0;
+    for i in [1..n] do
+        if (x - P.i eq 0) then index:=i;
+        end if;
+    end for;
+    return index;
+end function;
+
+/*
+* The following function outputs the quadratic equations generated from each equation (TYPE 1)
+*/
+generated_individually:=function(new_system,new_output,system,output)
+    compt:=0;
+    for i in [1..#system] do
+        for j in [1..n] do
+           if Degree(LeadingMonomial(system[i]),P.j) eq 1 then
+               Append(~new_system,system[i]*P.j);
+               Append(~new_output,output[i]*P.j);
+               compt:=compt+1;
+           end if;
+        end for;
+    end for;
+    printf "TYPE 1: %o equations \n",compt;
+    return new_system, new_output;
+end function;
+
+
+/*
+* The following function outputs the linear system given by collisions (TYPE 2) and the system (TYPE 0)
+*/
+collisions := function(new_system,new_output,quadraticterms,system,output)
+    lineqns:=[];
+    outlin:=[];
+    j:=0;
+    compt:=0;
+    Append(~new_output,system[1]);
+    Append(~new_system,output[1]);
+    for i in [2..#system] do
+        pos:= Position(quadraticterms,quadraticterms[i]);
+        if pos eq i  then
+        Append(~new_output,system[i]);
+        Append(~new_system,output[i]);
+        else
+        j:=j+1;
+        lineqns[j]:= system[i]+system[pos];
+        outlin[j]:=output[i]+output[pos];    
+        //Append(~new_output,outlin[j]);
+        //Append(~new_system,lineqns[j]);
+            for k in [1..n] do
+            Append(~new_system,lineqns[j]*P.k);
+            Append(~new_output,outlin[j]*P.k);
+            compt:=compt+1;
+       end for;
+        end if;
+    end for;
+    printf "TYPE 0: %o equations \n",#system-#lineqns;
+    printf "TYPE 2: %o equations \n",compt;
+    return new_system, new_output,lineqns,outlin;
+end function;
+
+
+/*
+* The following function outputs the quadratic system given by the semi-collisions (TYPE 3)
+* Note: this implementation does not remove the 3-cycles. There is then a little redundancy in the output.
+*/
+semi_collisions:=function(new_system,new_output,system,output)
+    nb_eq_generees:=0;
+    ensemble_reordonne:=[];
+    outputs_reordonne:=[];
+    compt:=0;
+    for i in [1..n] do
+        ensemble_reordonne[i]:=[];
+        outputs_reordonne[i]:=[];
+       for j in [1..#system] do
+           if Degree(LeadingMonomial(system[j]),P.i) eq 1 then
+               Append(~ensemble_reordonne[i],system[j]);
+               Append(~outputs_reordonne[i],output[j]);
+           end if;
+       end for;
+    end for;
+    i:=1;
+    while i le n do
+        seq:=ensemble_reordonne[i];
+        out:=outputs_reordonne[i];
+        for j in [1..#seq] do
+            for k in [j+1..#seq] do
+                Append(~new_system,seq[j]*LeadingMonomial(seq[k])/P.i+seq[k]*LeadingMonomial(seq[j])/P.i);
+                Append(~new_output,out[j]*LeadingMonomial(seq[k])/P.i+out[k]*LeadingMonomial(seq[j])/P.i);
+                compt:=compt+1;
+            end for;
+        end for;
+        i:=i+1;
+    end while;
+    printf "TYPE 3: %o equations\n",compt;
+    return new_system, new_output;
+end function;
+
+
+/*
+* The following function includes the equality x^2=x
+*/
+remove_squares:=function(new_system);
+    nbrows:=#new_system;
+    for j in [1..n] do
+        for i in [1..nbrows] do
+        for mon in Monomials(new_system[i]) do
+        if Degree(mon,P.j) eq 2 then
+        new_system[i]:=new_system[i] - mon + mon/P.j;
+            end if;
+        end for;
+        end for;
+    end for;
+    return new_system;
+end function;
+
+/*
+* The following function converts a system into a matrix
+*/
+generate_matrix_from_system:=function(nbrows, new_system,quadratic_unknowns)
+    M:= ZeroMatrix(K,nbrows,#quadratic_unknowns);
+    out:= ZeroMatrix(K,nbrows,1);
+    for i in [1..nbrows] do
+        for mon in Monomials(new_system[i]) do
+        if mon ne 1 then
+            M[i,Index(quadratic_unknowns,mon)]:=1;
+        else
+        out[i,1]:=1;
+        end if;
+        end for;
+    end for;
+    return M,out;
+end function;
+
+/*
+* The following function computes the number of columns of zero
+*/
+nb_columns_zero:=function(Q)
+    size:= #Rows(Q);
+    nb:=0;
+    rows:=Rows(Transpose(Q));
+    for i in [1..#rows] do
+        if rows[i] eq Vector(K,[0: i in [1..size]]) then 
+        nb:=nb+1;
+        end if;
+    end for;
+    return nb;
+end function;
+/******************************** PRG PRIVATE INFO  **********************************/
+
+seed:=[Random(K):i in [1..n]];
+    
+/*********************************  PRG PUBLIC INFO  *********************************/
+
+system_full,quadraticterms:=ComputePublicSystem();
+output_full:=[P!Evaluate(system_full[i],seed): i  in [1..m]];
+
+/******************************** Degree 2 linearization  ********************************/
+
+printf "............ Degree two linearization attack ............\n\n";
+system:=system_full;
+output:=output_full;
+new_system:=[];         //The system containing all equations of degree exaclty 2
+new_output:=[];
+quadratic_unknowns:=gen_quadratic_unknowns();
+lin_unknowns:=gen_lin_unknowns();
+lineqns:=[];           //The system containing all equations of degree exaclty 1
+outlin:=[];
+
+
+// STEP 1: Generation of the quadratic system
+// - Type 2
+new_system,new_output,lineqns,outlin:=collisions(new_system,new_output,quadraticterms,system,output);
+// - Type 1
+new_system,new_output:=generated_individually(new_system,new_output,system,output);
+// - Type 3
+new_system,new_output:=semi_collisions(new_system,new_output,system,output);
+nbrows:=#new_system;
+new_system:= remove_squares(new_system);
+syst:=[new_system[i]-new_output[i]:i in [1..nbrows]];
+printf "TOTAL EQUATIONS: %o \n",nbrows;
+
+
+//STEP 2 : Generate a matrix system
+M,out:= generate_matrix_from_system(nbrows,syst,quadratic_unknowns);
+
+//STEP 3 : Degree 2 linearization attempt
+E,T:=EchelonForm(M);
+nb_zero := nb_columns_zero(E);
+printf "TOTAL UNKNOWNS: %o\n",#quadratic_unknowns-nb_zero;
+r:=Rank(E);
+printf "Rank of the system: %o\n",r;
+
+if r eq #quadratic_unknowns-n-nb_zero then
+    printf "-------> Right seed found? %o\n",[(T*out)[i][1]: i in [1..n]] eq seed;
+else
+// STEP 3a : Rewritting the system
+Q:=Submatrix(M,[1..nbrows],[n+1..#quadratic_unknowns]);
+b:=Submatrix(M,[1..nbrows],[1..n]);
+
+// STEP 3b : Computing the left kernel of Q and generate a linear system
+T:=NullspaceMatrix(Q);
+right_member:=Matrix(P,T)*Matrix(P,b)*Matrix(P,n,1,lin_unknowns)-Matrix(P,T)*Matrix(P,nbrows,1,[out[i,1]:i in[1..nbrows]]);
+new_lin_system:=Setseq(Seqset(Eltseq(right_member)));
+for j in [1..#lineqns] do
+    Append(~new_lin_system,lineqns[j]+outlin[j]);
+end for;
+nbrows:=#new_lin_system;
+
+//STEP 3c: linear inversion tentative
+M,out:=generate_matrix_from_system(nbrows,new_lin_system,lin_unknowns);
+//nb_columns_zero(M);
+E,T:=EchelonForm(M);
+if Rank(E) eq n then
+    printf "--------> Right seed found? %o\n",[(T*out)[i,1]:i in[1..n]] eq seed;
+else
+    printf "!!! Degree two linearization failure, system not invertible\n -------->  need to guess: %o variables ",n- Rank(M);
+end if;
+end if;
+
+
+/**************************** GROEBNER REDUCTION *********************************/
+printf "\n.............. Groebner Basis computation ..............\n\n";
+SystemToSolve:=[system[i]+output[i]:i in [1..m]];
+FieldEqns:= [(P.i)^2 + (P.i) : i in [1..n]];
+SystemToSolve:=SystemToSolve cat FieldEqns;
+
+SetVerbose("Groebner", 0);
+G:=GroebnerBasis(SystemToSolve,3);
+I:=ideal<P|G>;
+variety:= Variety(I);
+
+if Isseedfound(variety,seed) then
+    printf "--------> Right seed found? true\n" ;
+else
+    printf "--------> Right seed found? false\n" ;
+end if;
+
+
+quit;
